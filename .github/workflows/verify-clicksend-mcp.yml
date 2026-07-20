@@ -1,3 +1,4 @@
+# Re-run trigger: retest after credentials fix
 name: Verify ClickSend MCP
 
 on:
