@@ -1,0 +1,18 @@
+{
+  "name": "clicksend-mcp",
+  "version": "1.0.0",
+  "description": "Remote MCP server exposing ClickSend SMS sending as a tool for Claude",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.19.2",
+    "zod": "^3.23.8"
+},
+  "engines": {
+    "node": ">=18"
+  }
+}
