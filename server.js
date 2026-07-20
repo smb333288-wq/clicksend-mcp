@@ -46,6 +46,7 @@ return { content: [{ type: "text", text: JSON.stringify(contacts, null, 2) }] };
 }
 const listsResp = await fetch(BASE_URL + "/lists?limit=100", { headers: authHeader() });
 const listsData = await listsResp.json();
+if (!listsResp.ok) throw new Error(JSON.stringify(listsData));
 const lists = listsData.data && listsData.data.data ? listsData.data.data : [];
 const all = [];
 for (const l of lists) {
