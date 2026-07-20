@@ -66,6 +66,38 @@ if (!resp.ok) return { content: [{ type: "text", text: "Error: " + JSON.stringif
 return { content: [{ type: "text", text: JSON.stringify(data.data && data.data.data ? data.data.data : data, null, 2) }] };
 });
 
+server.tool("get_sms_history", "Get OUTBOUND (sent) SMS history from ClickSend, paginated. Returns message body, recipient number, and date for each sent message. Use together with get_inbound_sms to reconstruct full conversations.", { page: z.number().optional().describe("Page number, starting at 1 (default 1)"), limit: z.number().optional().describe("Results per page, max 1000 (default 100)"), date_from: z.number().optional().describe("Optional unix timestamp lower bound"), date_to: z.number().optional().describe("Optional unix timestamp upper bound") }, async ({ page, limit, date_from, date_to }) => {
+let url = BASE_URL + "/sms/history?page=" + (page || 1) + "&limit=" + (limit || 100);
+if (date_from) url += "&date_from=" + date_from;
+if (date_to) url += "&date_to=" + date_to;
+const resp = await fetch(url, { headers: authHeader() });
+const data = await resp.json();
+if (!resp.ok) return { content: [{ type: "text", text: "Error: " + JSON.stringify(data) }], isError: true };
+const inner = data.data && data.data.data ? data.data.data : data;
+const meta = data.data ? { total: data.data.total, per_page: data.data.per_page, current_page: data.data.current_page, last_page: data.data.last_page } : {};
+return { content: [{ type: "text", text: JSON.stringify({ meta: meta, messages: inner }, null, 2) }] };
+});
+
+server.tool("get_inbound_sms", "Get INBOUND (received) SMS history from ClickSend, paginated. Unlike get_received_messages, this supports paging through the full inbound archive. Use together with get_sms_history to reconstruct full conversations.", { page: z.number().optional().describe("Page number, starting at 1 (default 1)"), limit: z.number().optional().describe("Results per page, max 1000 (default 100)") }, async ({ page, limit }) => {
+const resp = await fetch(BASE_URL + "/sms/inbound?page=" + (page || 1) + "&limit=" + (limit || 100), { headers: authHeader() });
+const data = await resp.json();
+if (!resp.ok) return { content: [{ type: "text", text: "Error: " + JSON.stringify(data) }], isError: true };
+const inner = data.data && data.data.data ? data.data.data : data;
+const meta = data.data ? { total: data.data.total, per_page: data.data.per_page, current_page: data.data.current_page, last_page: data.data.last_page } : {};
+return { content: [{ type: "text", text: JSON.stringify({ meta: meta, messages: inner }, null, 2) }] };
+});
+
+const CLICKSEND_GET_ALLOWLIST = ["sms/history", "sms/inbound", "sms/receipts", "lists"];
+server.tool("clicksend_get", "Read-only diagnostic: perform a GET request against a whitelisted ClickSend API v3 path (sms/history, sms/inbound, sms/receipts, lists) with an optional raw query string. Returns the raw JSON response. Use when the purpose-built tools don't expose a needed parameter.", { path: z.string().describe("API path relative to /v3, e.g. 'sms/inbound'. Must start with one of: " + CLICKSEND_GET_ALLOWLIST.join(", ")), query: z.string().optional().describe("Optional raw query string without leading '?', e.g. 'page=2&limit=500'") }, async ({ path, query }) => {
+const clean = path.replace(/^\/+/, "");
+if (!CLICKSEND_GET_ALLOWLIST.some((p) => clean === p || clean.startsWith(p + "/"))) {
+return { content: [{ type: "text", text: "Error: path not in allowlist: " + CLICKSEND_GET_ALLOWLIST.join(", ") }], isError: true };
+}
+const resp = await fetch(BASE_URL + "/" + clean + (query ? "?" + query.replace(/^\?/, "") : ""), { headers: authHeader() });
+const text = await resp.text();
+return { content: [{ type: "text", text: "HTTP " + resp.status + "\n" + text.slice(0, 100000) }], isError: !resp.ok };
+});
+
 server.tool("send_sms", "Send an SMS to one or more recipients. IMPORTANT: only call this AFTER the user has explicitly reviewed and approved the exact message text and the exact recipient list/count in chat. Never send without that confirmation.", { to: z.array(z.string()).describe("Array of recipient phone numbers in E.164 format, e.g. ['+14155552671']. Use one number for a single contact, or multiple for a group/everyone."), message: z.string().describe("The approved text message body to send") }, async ({ to, message }) => {
 const messages = to.map((number) => ({ to: number, body: message }));
 const resp = await fetch(BASE_URL + "/sms/send", { method: "POST", headers: authHeader(), body: JSON.stringify({ messages: messages }) });
