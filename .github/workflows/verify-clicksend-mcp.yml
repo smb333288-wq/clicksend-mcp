@@ -2,6 +2,11 @@ name: Verify ClickSend MCP
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - claude/clicksend-mcp-connect-q568v8
+    paths:
+      - .github/workflows/verify-clicksend-mcp.yml
 
 jobs:
   verify:
