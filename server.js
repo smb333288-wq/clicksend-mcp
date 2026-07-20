@@ -7,6 +7,17 @@ const CLICKSEND_USERNAME = process.env.CLICKSEND_USERNAME;
 const CLICKSEND_API_KEY = process.env.CLICKSEND_API_KEY;
 const BASE_URL = "https://rest.clicksend.com/v3";
 
+if (!CLICKSEND_USERNAME || !CLICKSEND_API_KEY) {
+  console.warn(
+    "WARNING: missing ClickSend credentials - " +
+    (!CLICKSEND_USERNAME ? "CLICKSEND_USERNAME " : "") +
+    (!CLICKSEND_API_KEY ? "CLICKSEND_API_KEY " : "") +
+    "not set. Set them in the Render service's Environment settings; tool calls to ClickSend will fail with 401 until they are."
+  );
+} else {
+  console.log("ClickSend credentials loaded from environment (CLICKSEND_USERNAME set, CLICKSEND_API_KEY=***" + CLICKSEND_API_KEY.slice(-4) + ").");
+}
+
 function authHeader() {
 return { Authorization: "Basic " + Buffer.from(CLICKSEND_USERNAME + ":" + CLICKSEND_API_KEY).toString("base64"), "Content-Type": "application/json" };
 }
@@ -68,7 +79,17 @@ return server;
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+res.header("Access-Control-Allow-Origin", "*");
+res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+res.header("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version");
+res.header("Access-Control-Expose-Headers", "Mcp-Session-Id");
+if (req.method === "OPTIONS") return res.sendStatus(204);
+next();
+});
+
 app.post("/mcp", async (req, res) => {
+try {
 const server = getServer();
 const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 res.on("close", () => {
@@ -77,6 +98,20 @@ server.close();
 });
 await server.connect(transport);
 await transport.handleRequest(req, res, req.body);
+} catch (err) {
+console.error("Error handling MCP request:", err);
+if (!res.headersSent) {
+res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null });
+}
+}
+});
+
+app.get("/mcp", (req, res) => {
+res.status(405).json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null });
+});
+
+app.delete("/mcp", (req, res) => {
+res.status(405).json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null });
 });
 
 app.get("/", (req, res) => res.send("ClickSend MCP server is running."));
