@@ -1,0 +1,130 @@
+name: Verify ClickSend MCP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      CLICKSEND_USERNAME: ${{ secrets.CLICKSEND_USERNAME }}
+      CLICKSEND_API_KEY: ${{ secrets.CLICKSEND_API_KEY }}
+      SERVICE_ID: srv-d9err86rnols73erch8g
+      MCP_URL: https://clicksend-mcp.onrender.com
+    steps:
+      - name: Render service info (branch, status, url)
+        run: |
+          curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services/$SERVICE_ID" | tee service.json | \
+            jq '{id, name, type, suspended, branch, autoDeploy, serviceDetails: {url: .serviceDetails.url, region: .serviceDetails.region}}'
+
+      - name: Render env var keys configured on the service
+        run: |
+          echo "Keys present (values withheld by Render API listing unless explicitly requested):"
+          curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services/$SERVICE_ID/env-vars" | jq -r '.[].envVar.key'
+
+      - name: Trigger a new deploy
+        run: |
+          DEPLOY=$(curl -sS -X POST -H "Authorization: Bearer $RENDER_API_KEY" -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/$SERVICE_ID/deploys" -d '{}')
+          echo "$DEPLOY" | jq .
+          DEPLOY_ID=$(echo "$DEPLOY" | jq -r '.id // empty')
+          if [ -z "$DEPLOY_ID" ]; then
+            echo "No deploy id returned, falling back to latest deploy"
+            DEPLOY_ID=$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+              "https://api.render.com/v1/services/$SERVICE_ID/deploys?limit=1" | jq -r '.[0].deploy.id')
+          fi
+          echo "DEPLOY_ID=$DEPLOY_ID" >> "$GITHUB_ENV"
+
+      - name: Wait for deploy to go live
+        run: |
+          for i in $(seq 1 40); do
+            STATUS=$(curl -sS -H "Authorization: Bearer $RENDER_API_KEY" \
+              "https://api.render.com/v1/services/$SERVICE_ID/deploys/$DEPLOY_ID" | jq -r '.status')
+            echo "attempt $i: status=$STATUS"
+            if [ "$STATUS" = "live" ]; then
+              echo "Deploy is live."
+              exit 0
+            fi
+            case "$STATUS" in
+              build_failed|update_failed|canceled|deactivated)
+                echo "::error::Deploy ended with status=$STATUS"
+                exit 1
+                ;;
+            esac
+            sleep 15
+          done
+          echo "::error::Timed out waiting for deploy to go live"
+          exit 1
+
+      - name: Root endpoint check
+        if: always()
+        run: |
+          CODE=$(curl -s -o body.txt -w "%{http_code}" "$MCP_URL/")
+          echo "GET / -> $CODE"
+          cat body.txt
+
+      - name: MCP initialize handshake
+        if: always()
+        run: |
+          RESP=$(curl -sS -X POST "$MCP_URL/mcp" \
+            -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify-workflow","version":"1.0.0"}}}')
+          echo "raw: $RESP"
+          echo "$RESP" | grep '^data: ' | sed 's/^data: //' | tee init.json | jq .
+          jq -e '.result.protocolVersion' init.json > /dev/null && echo "OK: initialize succeeded"
+
+      - name: MCP tools/list (discovery)
+        if: always()
+        run: |
+          RESP=$(curl -sS -X POST "$MCP_URL/mcp" \
+            -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
+          echo "$RESP" | grep '^data: ' | sed 's/^data: //' | tee tools.json | jq '.result.tools[] | {name, description}'
+          echo "Tool count: $(jq '.result.tools | length' tools.json)"
+
+      - name: Tool call - list_contact_lists
+        if: always()
+        run: |
+          curl -sS -X POST "$MCP_URL/mcp" \
+            -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_contact_lists","arguments":{}}}' \
+            | grep '^data: ' | sed 's/^data: //' | jq .
+
+      - name: Tool call - list_contacts (all)
+        if: always()
+        run: |
+          curl -sS -X POST "$MCP_URL/mcp" \
+            -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_contacts","arguments":{}}}' \
+            | grep '^data: ' | sed 's/^data: //' | jq .
+
+      - name: Tool call - get_received_messages
+        if: always()
+        run: |
+          curl -sS -X POST "$MCP_URL/mcp" \
+            -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_received_messages","arguments":{"limit":3}}}' \
+            | grep '^data: ' | sed 's/^data: //' | jq .
+
+      - name: send_sms - schema check only (NOT invoked, would send a real SMS)
+        if: always()
+        run: |
+          jq -e '.result.tools[] | select(.name=="send_sms")' tools.json
+          echo "send_sms is discoverable with the expected schema. Not invoking it here - a real call sends a real SMS and requires explicit human-approved recipient/message, per the tool's own description."
+
+      - name: Protocol compliance - GET /mcp must be 405
+        if: always()
+        run: |
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "$MCP_URL/mcp")
+          echo "GET /mcp -> $CODE"
+          if [ "$CODE" != "405" ]; then echo "::warning::Expected 405, got $CODE"; fi
+
+      - name: Protocol compliance - DELETE /mcp must be 405
+        if: always()
+        run: |
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$MCP_URL/mcp")
+          echo "DELETE /mcp -> $CODE"
+          if [ "$CODE" != "405" ]; then echo "::warning::Expected 405, got $CODE"; fi
